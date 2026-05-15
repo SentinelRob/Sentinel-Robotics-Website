@@ -1,0 +1,496 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SENTINEL ROBOTICS</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    background: #000;
+    overflow: hidden;
+    cursor: default;
+    font-family: 'VT323', monospace;
+    color: #ffb070;
+  }
+  body {
+    background:
+      radial-gradient(ellipse at center, #1a0e08 0%, #050201 65%, #000 100%);
+  }
+
+  /* Frame is a positioned <img> sized to its natural aspect, centered. */
+  #frame {
+    position: fixed;
+    pointer-events: none;
+    z-index: 5;
+    user-select: none;
+    -webkit-user-drag: none;
+  }
+  /* CRT canvas sits behind the frame, exactly inside its aperture. */
+  #crt {
+    position: fixed;
+    z-index: 4;
+    image-rendering: pixelated;
+    cursor: pointer;
+  }
+
+  /* Pre-load gate: the canvas + frame are hidden until 'sentinel-ready'.
+     This keeps the boot sequence from being preceded by a flash of unstyled
+     load-order. */
+  #crt, #frame { opacity: 0; transition: opacity 0.25s ease; }
+  body.sentinel-ready #crt, body.sentinel-ready #frame { opacity: 1; }
+
+  /* Preloader card */
+  #preload {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(ellipse at center, #1a0e08 0%, #050201 65%, #000 100%);
+    z-index: 100;
+    transition: opacity 0.4s ease;
+  }
+  body.sentinel-ready #preload { opacity: 0; pointer-events: none; }
+
+  #preload .inner {
+    text-align: center;
+    color: #ffb070;
+    font-family: 'VT323', monospace;
+    text-shadow: 0 0 10px rgba(255, 176, 112, 0.3);
+  }
+  #preload .title {
+    font-size: 28px; letter-spacing: 8px; margin-bottom: 12px;
+  }
+  #preload .sub {
+    font-size: 14px; letter-spacing: 4px; color: #bf6438; margin-bottom: 28px;
+  }
+  #preload .bar {
+    width: 280px; height: 6px; background: #1a0e08; margin: 0 auto;
+    border: 1px solid #7a3a18; position: relative; overflow: hidden;
+  }
+  #preload .bar::after {
+    content: '';
+    position: absolute; left: -40%; top: 0; bottom: 0; width: 40%;
+    background: linear-gradient(90deg, transparent, #ffb070, transparent);
+    animation: scan 1.4s linear infinite;
+  }
+  @keyframes scan { from { left: -40%; } to { left: 100%; } }
+
+  /* Deck overlay: lives above the CRT canvas (so the pdf shows 'on' the screen)
+     but BELOW the frame z-index when not fullscreen, so the bezel still wraps. */
+  #deck {
+    position: fixed;
+    z-index: 6;       /* above frame so embedded controls work */
+    background: transparent;
+    display: none;
+    overflow: hidden;
+  }
+  body.deck-open #deck { display: block; }
+  body.deck-fullscreen #frame { display: none !important; }
+  body.deck-fullscreen #crt { opacity: 0; }
+  body.deck-fullscreen #deck {
+    inset: 0 !important;
+    width: 100vw !important; height: 100vh !important;
+    left: 0 !important; top: 0 !important;
+    background: #0a0604;
+  }
+
+  /* Inside the deck overlay */
+  .deck-shell {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    background: #0a0604;
+  }
+  .deck-bar {
+    flex: 0 0 auto;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 22px;
+    border-bottom: 1px solid #7a3a18;
+    color: #ffb070;
+    font-family: 'VT323', monospace;
+    font-size: 18px;
+    letter-spacing: 2px;
+    user-select: none;
+  }
+  body.deck-fullscreen .deck-bar { background: #0a0604; }
+  .deck-bar .group { display: flex; align-items: center; gap: 14px; }
+  .deck-bar button {
+    background: transparent;
+    border: 1px solid #ffb070;
+    color: #ffb070;
+    font-family: 'VT323', monospace;
+    font-size: 16px;
+    letter-spacing: 2px;
+    padding: 6px 14px;
+    cursor: pointer;
+    text-transform: uppercase;
+    transition: all 0.15s ease;
+  }
+  .deck-bar button:hover {
+    background: #ffb070;
+    color: #0a0604;
+  }
+  .deck-bar button:disabled {
+    border-color: #7a3a18;
+    color: #7a3a18;
+    cursor: not-allowed;
+    background: transparent;
+  }
+  .deck-bar .label-dim { color: #bf6438; }
+  .deck-bar .title { letter-spacing: 6px; font-size: 20px; }
+  .deck-bar .pageinput {
+    background: transparent;
+    border: 1px solid #7a3a18;
+    color: #ffb070;
+    font-family: 'VT323', monospace;
+    font-size: 16px;
+    width: 50px;
+    text-align: center;
+    padding: 4px 0;
+  }
+
+  .deck-stage {
+    flex: 1 1 auto;
+    position: relative;
+    overflow: hidden;
+    background: #0a0604;
+  }
+  .deck-stage canvas {
+    display: block;
+    margin: 0 auto;
+    /* Drop shadow gives the page some lift on the dark bg without being kitsch */
+    box-shadow: 0 0 60px rgba(255, 176, 112, 0.08);
+  }
+  /* CRT-mode (non-fullscreen): tint the page very slightly amber so it
+     reads like phosphor-illuminated paper. We don't tint in fullscreen. */
+  body.deck-open:not(.deck-fullscreen) .deck-stage canvas {
+    filter: sepia(0.1) hue-rotate(-12deg) saturate(0.85);
+  }
+
+  /* ── Cold-open: brief broken-signal card before the deck takes over ─── */
+  .apology-frame {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6vh 8vw;
+    overflow: hidden;
+    background: #0a0604;
+    z-index: 2;
+    opacity: 0;
+    transition: opacity 0.5s ease;
+    pointer-events: none;
+  }
+  .apology-frame.show { opacity: 1; }
+  .apology {
+    font-family: 'VT323', monospace;
+    font-size: clamp(22px, 2.8vw, 40px);
+    line-height: 1.25;
+    letter-spacing: 0.02em;
+    color: #ffba84;
+    text-align: center;
+    max-width: min(1100px, 90%);
+    text-shadow:
+      0 0 8px rgba(255, 176, 112, 0.6),
+      0 0 28px rgba(255, 134, 70, 0.22),
+      1px 0 0 rgba(255, 80, 40, 0.45),
+      -1px 0 0 rgba(80, 200, 255, 0.35);
+    text-wrap: pretty;
+  }
+
+  /* Deck iframe — fills the stage once it loads */
+  #deck-iframe {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: #0a0604;
+    opacity: 0;
+    transition: opacity 0.45s ease;
+  }
+  #deck-iframe.ready { opacity: 1; }
+
+  /* Page navigation arrows */
+  .deck-nav {
+    position: absolute; top: 50%; transform: translateY(-50%);
+    background: rgba(10, 6, 4, 0.7);
+    border: 1px solid #ffb070;
+    color: #ffb070;
+    font-family: 'VT323', monospace;
+    font-size: 28px;
+    width: 48px; height: 64px;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    user-select: none;
+    transition: all 0.15s ease;
+    z-index: 2;
+  }
+  .deck-nav:hover { background: #ffb070; color: #0a0604; }
+  .deck-nav.prev { left: 18px; }
+  .deck-nav.next { right: 18px; }
+  .deck-nav:disabled, .deck-nav.disabled {
+    border-color: #7a3a18; color: #7a3a18; cursor: not-allowed; background: rgba(10,6,4,0.4);
+  }
+
+  /* No-JS / WebGL fallback */
+  noscript, .nojs {
+    color: #ffb070;
+    text-align: center;
+    padding: 40px;
+    font-family: 'VT323', monospace;
+  }
+
+  .preload-font { position: absolute; left: -9999px; top: -9999px; font-family: 'VT323', monospace; font-size: 16px; }
+</style>
+</head>
+<body>
+
+<template id="__bundler_thumbnail">
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+    <defs>
+      <radialGradient id="g" cx="50%" cy="50%" r="60%">
+        <stop offset="0%" stop-color="#1a0e08"/>
+        <stop offset="65%" stop-color="#050201"/>
+        <stop offset="100%" stop-color="#000"/>
+      </radialGradient>
+    </defs>
+    <rect width="256" height="256" fill="url(#g)"/>
+    <g fill="none" stroke="#ffb070" stroke-width="3">
+      <rect x="56" y="56" width="144" height="144" rx="6"/>
+      <line x1="80" y1="100" x2="176" y2="100"/>
+      <line x1="80" y1="128" x2="148" y2="128"/>
+      <line x1="80" y1="156" x2="160" y2="156"/>
+    </g>
+    <text x="128" y="42" text-anchor="middle" fill="#ffb070" font-family="monospace" font-size="20" letter-spacing="4">SENTINEL</text>
+  </svg>
+</template>
+
+<!-- Preloader: stays up until everything (frame, fonts, logos, PDF.js) is ready -->
+<div id="preload">
+  <div class="inner">
+    <div class="title">SENTINEL</div>
+    <div class="sub">INITIALISING TERMINAL</div>
+    <div class="bar"></div>
+  </div>
+</div>
+
+<canvas id="crt"></canvas>
+<img id="frame" src="assets/TVFrame.png" alt="">
+
+<!-- Deck overlay: positioned over the CRT screen aperture, contained by the frame.
+     Goes fullscreen via body.deck-fullscreen. Currently shows the broken-broadcast
+     apology card while the real deck is being prepared as image plates. -->
+<div id="deck">
+  <div class="deck-shell">
+    <div class="deck-bar">
+      <div class="group">
+        <span class="title">INVESTOR DECK</span>
+        <span class="label-dim" id="deck-status">·  TUNING IN</span>
+      </div>
+      <div class="group">
+        <button id="deck-fullscreen" title="Toggle fullscreen (F)">FULLSCREEN</button>
+        <button id="deck-close" title="Close (Esc)">✕ CLOSE</button>
+      </div>
+    </div>
+    <div class="deck-stage" id="deck-stage">
+      <div class="apology-frame" id="apology-frame">
+        <p class="apology" id="apology-line">TUNING IN&nbsp;·&nbsp;STANDBY FOR TRANSMISSION&hellip;</p>
+      </div>
+      <iframe id="deck-iframe" title="Sentinel Pre-Seed Deck" allow="fullscreen"></iframe>
+    </div>
+  </div>
+</div>
+
+<span class="preload-font">.</span>
+
+<!-- BOOT FAILSAFE
+     If for any reason crt.js never fires `sentinel:ready` (e.g. a file://
+     edge case where an image/font load hangs past our timeouts), force the
+     preloader to dismiss after 8s so the user always sees something. We
+     also stamp a small diagnostic so we can tell whether boot timed out
+     vs. completed normally. This script is in the page template — NOT in
+     blob-url crt.js — so it always runs even if crt.js stalls. -->
+<script>
+(function () {
+  var FAILSAFE_MS = 8000;
+  var fired = false;
+  document.addEventListener('sentinel:ready', function () { fired = true; });
+  setTimeout(function () {
+    if (fired) return;
+    document.body.classList.add('sentinel-ready');
+    document.dispatchEvent(new CustomEvent('sentinel:ready'));
+    // visible breadcrumb in case crt.js is partially broken
+    var el = document.createElement('div');
+    el.style.cssText = 'position:fixed;left:14px;bottom:12px;font:12px/1.4 ui-monospace,monospace;color:#ff8a4a;opacity:0.65;z-index:99999;pointer-events:none;letter-spacing:0.08em;';
+    el.textContent = '[ boot: failsafe — render may be partial ]';
+    document.body.appendChild(el);
+  }, FAILSAFE_MS);
+})();
+</script>
+
+<!-- ── Deck overlay controller ─────────────────────────────────────────
+     Cold-open: ~2.5s of CRT chaos + a single "TUNING IN" card, then the
+     deck iframe loads and fades in. We pre-load the iframe lazily (on
+     first deck-open) so the heavy bundle doesn't compete with the boot
+     sequence on initial page load. -->
+<script>
+(function () {
+  const DECK_URL    = 'deck.html';
+  const COLD_OPEN_MS = 2500;    // apology card duration before iframe loads
+  const FADE_MS      = 500;     // overlap window: iframe fades in while apology fades out
+  const CHAOS_OPEN   = 0.55;    // tube chaos during the tune-in card
+  const CHAOS_LOAD   = 0.20;    // tube chaos while iframe is loading behind the fade
+
+  let dom = null;
+  let timers = [];
+  let iframeLoaded = false;
+
+  function $(id) { return document.getElementById(id); }
+  function ensureDom() {
+    if (dom) return dom;
+    dom = {
+      apology:  $('apology-frame'),
+      iframe:   $('deck-iframe'),
+      status:   $('deck-status'),
+      btnFs:    $('deck-fullscreen'),
+      btnClose: $('deck-close'),
+    };
+    return dom;
+  }
+
+  function clearTimers() {
+    timers.forEach(clearTimeout);
+    timers = [];
+  }
+
+  function setChaos(v) {
+    if (window.SentinelCRT && window.SentinelCRT.setChaos) {
+      window.SentinelCRT.setChaos(v);
+    }
+  }
+
+  function startSequence() {
+    clearTimers();
+    const d = ensureDom();
+
+    // Show the tune-in card.
+    d.apology.classList.add('show');
+    d.status.textContent = '·  TUNING IN';
+    setChaos(CHAOS_OPEN);
+
+    // Kick off the iframe load in parallel so by the time the cold-open
+    // is done, the deck is (often) already painted.
+    if (!iframeLoaded) {
+      d.iframe.addEventListener('load', () => {
+        iframeLoaded = true;
+        d.iframe.classList.add('ready');
+        setChaos(0);
+        d.status.textContent = '·  SIGNAL LOCKED';
+      }, { once: true });
+      d.iframe.src = DECK_URL;
+    } else {
+      d.iframe.classList.add('ready');
+    }
+
+    // After the cold-open, drop chaos and fade the card out.
+    timers.push(setTimeout(() => {
+      setChaos(CHAOS_LOAD);
+      d.apology.classList.remove('show');
+      d.iframe.classList.add('ready');
+      // Settle to 0 once the iframe should be in view.
+      timers.push(setTimeout(() => {
+        if (iframeLoaded) setChaos(0);
+      }, FADE_MS + 200));
+    }, COLD_OPEN_MS));
+  }
+
+  function stopSequence() {
+    clearTimers();
+    const d = ensureDom();
+    d.apology.classList.remove('show');
+    setChaos(0);
+  }
+
+  function setFullscreen(on) {
+    const d = ensureDom();
+    document.body.classList.toggle('deck-fullscreen', on);
+    if (window.SentinelCRT) window.SentinelCRT.setCleanMode(on);
+    d.btnFs.textContent = on ? 'EXIT FULLSCREEN' : 'FULLSCREEN';
+  }
+
+  function closeDeck() {
+    stopSequence();
+    setFullscreen(false);
+    document.body.classList.remove('deck-open');
+    document.dispatchEvent(new CustomEvent('sentinel:exit-deck'));
+  }
+
+  // Position the deck overlay precisely over the screen aperture.
+  const APERTURE = { l: 0.0477, t: 0.0435, w: 0.8976, h: 0.8986 };
+  const FRAME_AR = 3125 / 2347;
+  function positionDeckOverScreen() {
+    const deck = document.getElementById('deck');
+    if (document.body.classList.contains('deck-fullscreen')) return;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    let frameW, frameH;
+    if (vw / vh > FRAME_AR) { frameH = Math.min(vh * 0.94, vh); frameW = frameH * FRAME_AR; }
+    else { frameW = Math.min(vw * 0.94, vw); frameH = frameW / FRAME_AR; }
+    const frameLeft = (vw - frameW) / 2;
+    const frameTop = (vh - frameH) / 2;
+    deck.style.left = (frameLeft + frameW * APERTURE.l) + 'px';
+    deck.style.top = (frameTop + frameH * APERTURE.t) + 'px';
+    deck.style.width = (frameW * APERTURE.w) + 'px';
+    deck.style.height = (frameH * APERTURE.h) + 'px';
+  }
+
+  function wire() {
+    const d = ensureDom();
+    d.btnFs.addEventListener('click',
+      () => setFullscreen(!document.body.classList.contains('deck-fullscreen')));
+    d.btnClose.addEventListener('click', closeDeck);
+
+    document.addEventListener('sentinel:enter-deck', () => {
+      document.body.classList.add('deck-open');
+      positionDeckOverScreen();
+      startSequence();
+    });
+    document.addEventListener('sentinel:exit-deck', () => {
+      document.body.classList.remove('deck-open');
+      document.body.classList.remove('deck-fullscreen');
+      if (window.SentinelCRT) window.SentinelCRT.setCleanMode(false);
+      stopSequence();
+    });
+
+    window.addEventListener('resize', () => {
+      if (document.body.classList.contains('deck-open')) positionDeckOverScreen();
+    });
+
+    window.addEventListener('keydown', (e) => {
+      if (!document.body.classList.contains('deck-open')) return;
+      if (e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        setFullscreen(!document.body.classList.contains('deck-fullscreen'));
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeDeck();
+      }
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', wire);
+  } else {
+    wire();
+  }
+})();
+</script>
+
+<script src="crt.js"></script>
+
+</body>
+</html>
