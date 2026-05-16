@@ -1,0 +1,22 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# Working files — source artwork, PDFs, reference material
+uploads/
+scraps/
+
+# Build / dist (none currently, but reserve)
+dist/
+build/
+
+# Logs
+*.log
+npm-debug.log*

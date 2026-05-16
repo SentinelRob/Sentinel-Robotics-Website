@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SENTINEL ROBOTICS</title>
+<link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="assets/favicon-192.png">
+<link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
@@ -37,6 +40,12 @@
     z-index: 4;
     image-rendering: pixelated;
     cursor: pointer;
+    /* We handle scroll/zoom ourselves on this surface, so disable the
+       browser's default touch gestures (pull-to-refresh, double-tap zoom,
+       overscroll bounce). */
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
   }
 
   /* Pre-load gate: the canvas + frame are hidden until 'sentinel-ready'.
@@ -431,21 +440,17 @@
   }
 
   // Position the deck overlay precisely over the screen aperture.
+  // Aperture % apply to the full viewport now that the TV frame
+  // stretches to fill it.
   const APERTURE = { l: 0.0477, t: 0.0435, w: 0.8976, h: 0.8986 };
-  const FRAME_AR = 3125 / 2347;
   function positionDeckOverScreen() {
     const deck = document.getElementById('deck');
     if (document.body.classList.contains('deck-fullscreen')) return;
     const vw = window.innerWidth, vh = window.innerHeight;
-    let frameW, frameH;
-    if (vw / vh > FRAME_AR) { frameH = Math.min(vh * 0.94, vh); frameW = frameH * FRAME_AR; }
-    else { frameW = Math.min(vw * 0.94, vw); frameH = frameW / FRAME_AR; }
-    const frameLeft = (vw - frameW) / 2;
-    const frameTop = (vh - frameH) / 2;
-    deck.style.left = (frameLeft + frameW * APERTURE.l) + 'px';
-    deck.style.top = (frameTop + frameH * APERTURE.t) + 'px';
-    deck.style.width = (frameW * APERTURE.w) + 'px';
-    deck.style.height = (frameH * APERTURE.h) + 'px';
+    deck.style.left = (vw * APERTURE.l) + 'px';
+    deck.style.top = (vh * APERTURE.t) + 'px';
+    deck.style.width = (vw * APERTURE.w) + 'px';
+    deck.style.height = (vh * APERTURE.h) + 'px';
   }
 
   function wire() {

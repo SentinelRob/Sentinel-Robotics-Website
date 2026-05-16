@@ -2,8 +2,13 @@
    2D source canvas → WebGL CRT shader (scanlines, bloom, line-noise, slot-mask, vignette). */
 
 (function () {
-  const SCREEN_W = 1280;
-  const SCREEN_H = 960;
+  // Source canvas dimensions — recomputed on every resize() so the
+  // website fills the viewport at any aspect ratio (portrait phone,
+  // landscape phone, ultra-wide desktop). Layout reflows accordingly;
+  // text stays legible because our 'unit' (see fontPx/font/pad below)
+  // is keyed to the LARGER axis, not a fixed pixel.
+  let SCREEN_W = 1280;
+  let SCREEN_H = 960;
 
   const src = document.createElement('canvas');
   src.width = SCREEN_W;
@@ -228,57 +233,90 @@
   gl.uniform1i(u.tex, 0);
 
   // ── Sizing ─────────────────────────────────────────────────────
+  // The aperture is the rectangle inside the TV bezel where the CRT
+  // image lives. It's expressed as a fraction of the frame so it
+  // survives the frame being stretched non-uniformly to fill the
+  // viewport.
   const APERTURE = { l: 0.0477, t: 0.0435, w: 0.8976, h: 0.8986 };
-  const FRAME_AR = 3125 / 2347;
   let cleanMode = false; // fullscreen deck disables CRT effects
+
+  // Pick a source-canvas resolution given the aperture's pixel size.
+  // Aim for ~1080 along the longer axis so text rasterises cleanly
+  // without us paying the cost of a 4K source canvas on big monitors.
+  function computeSourceSize(apW, apH) {
+    const aspect = apW / Math.max(1, apH);
+    const BASE = 1080;
+    let w, h;
+    if (aspect >= 1) { h = BASE; w = Math.round(BASE * aspect); }
+    else             { w = BASE; h = Math.round(BASE / aspect); }
+    // Clamp so weird viewports don't allocate huge canvases.
+    w = Math.max(560, Math.min(2200, w));
+    h = Math.max(560, Math.min(2200, h));
+    return { w, h };
+  }
+
+  // Resize the source canvas in place. The 2D context survives a
+  // canvas resize, but content is cleared — fine, we redraw every frame.
+  function setSourceSize(w, h) {
+    if (src.width === w && src.height === h) return;
+    src.width = w;
+    src.height = h;
+    SCREEN_W = w;
+    SCREEN_H = h;
+    // Caches keyed to size are invalidated.
+    homeScratch = null;
+  }
 
   function resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const vw = window.innerWidth, vh = window.innerHeight;
 
     if (cleanMode) {
-      // fullscreen: canvas fills viewport, no frame
+      // Deck-fullscreen: no frame, canvas fills viewport.
       out.style.left = '0';
       out.style.top = '0';
       out.style.width = vw + 'px';
       out.style.height = vh + 'px';
-      out.width = vw * dpr;
-      out.height = vh * dpr;
+      out.width = Math.max(1, Math.round(vw * dpr));
+      out.height = Math.max(1, Math.round(vh * dpr));
       const frame = document.getElementById('frame');
       if (frame) frame.style.display = 'none';
+      const ss = computeSourceSize(vw, vh);
+      setSourceSize(ss.w, ss.h);
       gl.viewport(0, 0, out.width, out.height);
       return;
     }
 
-    let frameW, frameH;
-    if (vw / vh > FRAME_AR) {
-      frameH = Math.min(vh * 0.94, vh);
-      frameW = frameH * FRAME_AR;
-    } else {
-      frameW = Math.min(vw * 0.94, vw);
-      frameH = frameW / FRAME_AR;
+    // Stretch the TV frame non-uniformly to fill the viewport. This is
+    // a deliberate aesthetic compromise so the site fills the screen on
+    // any device — we can swap in a more elegant bezel solution later
+    // (9-slice, vector frame, hide-on-mobile, etc.) without touching
+    // the layout or scroll machinery below.
+    const frame = document.getElementById('frame');
+    if (frame) {
+      frame.style.display = '';
+      frame.style.left = '0';
+      frame.style.top = '0';
+      frame.style.width = vw + 'px';
+      frame.style.height = vh + 'px';
     }
-    const frameLeft = (vw - frameW) / 2;
-    const frameTop = (vh - frameH) / 2;
-    const apW = frameW * APERTURE.w;
-    const apH = frameH * APERTURE.h;
-    const apL = frameLeft + frameW * APERTURE.l;
-    const apT = frameTop + frameH * APERTURE.t;
+
+    // Aperture is the same fractional rectangle inside the stretched frame.
+    const apL = vw * APERTURE.l;
+    const apT = vh * APERTURE.t;
+    const apW = vw * APERTURE.w;
+    const apH = vh * APERTURE.h;
     out.style.left = apL + 'px';
     out.style.top = apT + 'px';
     out.style.width = apW + 'px';
     out.style.height = apH + 'px';
-    out.width = apW * dpr;
-    out.height = apH * dpr;
+    out.width = Math.max(1, Math.round(apW * dpr));
+    out.height = Math.max(1, Math.round(apH * dpr));
 
-    const frame = document.getElementById('frame');
-    if (frame) {
-      frame.style.display = '';
-      frame.style.width = frameW + 'px';
-      frame.style.height = frameH + 'px';
-      frame.style.left = frameLeft + 'px';
-      frame.style.top = frameTop + 'px';
-    }
+    // Reflow the source canvas to match aperture aspect.
+    const ss = computeSourceSize(apW, apH);
+    setSourceSize(ss.w, ss.h);
+
     gl.viewport(0, 0, out.width, out.height);
   }
   window.addEventListener('resize', resize);
@@ -517,7 +555,13 @@
   //         'authing' (loader), 'deck'.
   let phase = 'preload';
   let phaseStart = performance.now();
-  function setPhase(p) { phase = p; phaseStart = performance.now(); }
+  function setPhase(p) {
+    phase = p;
+    phaseStart = performance.now();
+    // Reset scroll when (re-)entering the home screen so a user coming
+    // back from the gate doesn't land mid-scroll.
+    if (p === 'home') homeScrollY = 0;
+  }
   function phaseElapsed() { return (performance.now() - phaseStart) / 1000; }
 
   document.addEventListener('sentinel:ready', () => {
@@ -573,10 +617,25 @@
   setInterval(() => { cursorOn = !cursorOn; }, 530);
 
   // ── Type sizes ─────────────────────────────────────────────────
+  // Legacy fixed-px constants — kept in case anything still references
+  // them. New draw code uses the em-based helpers below, which scale
+  // with the current SCREEN_W/SCREEN_H.
   const FONT       = '20px "VT323", "Courier New", monospace';
   const FONT_SMALL = '15px "VT323", "Courier New", monospace';
   const FONT_BIG   = '34px "VT323", "Courier New", monospace';
   const FONT_HUGE  = '48px "VT323", "Courier New", monospace';
+
+  // ── Dynamic type & spacing ─────────────────────────────────────
+  // 'unit' is keyed to the LARGER screen axis so a portrait phone and a
+  // landscape desktop end up with comparably-sized type. Everything
+  // (fonts, padding, line heights, button sizes) flows from this.
+  function unit() { return Math.max(SCREEN_W, SCREEN_H) / 60; }
+  function fontPx(em) { return Math.max(10, Math.round(em * unit())); }
+  function font(em) { return fontPx(em) + 'px "VT323", "Courier New", monospace'; }
+  function pad() { return Math.round(Math.max(24, Math.min(80, unit() * 3.2))); }
+  // Portrait/square uses a stacked layout that can scroll; landscape
+  // uses the side-by-side hero+copy split.
+  function isPortrait() { return SCREEN_W / SCREEN_H < 1.25; }
 
   // ── Mouse / hit testing ────────────────────────────────────────
   let mouseScreen = { x: -1, y: -1 };
@@ -601,6 +660,42 @@
       if (isHover(h)) { h.action(); return; }
     }
   });
+
+  // ── Home-page scrolling ────────────────────────────────────────
+  // In stacked (portrait) layout the home content can exceed the
+  // aperture height. We let the user scroll the canvas content
+  // vertically via wheel/touch. Hits are registered in the same
+  // (post-scroll) coordinate space as mouseScreen, so isHover() is
+  // unchanged — we just clamp registration so off-screen widgets
+  // don't trigger.
+  let homeScrollY = 0;
+  let homeContentHeight = 0;
+  let homeViewportH = 0;
+  function maxHomeScroll() {
+    return Math.max(0, homeContentHeight - homeViewportH);
+  }
+  out.addEventListener('wheel', (e) => {
+    if (phase !== 'home' || homeContentHeight <= homeViewportH) return;
+    homeScrollY = Math.max(0, Math.min(maxHomeScroll(), homeScrollY + e.deltaY));
+    e.preventDefault();
+  }, { passive: false });
+  let touchScrollStart = null;
+  out.addEventListener('touchstart', (e) => {
+    if (phase !== 'home' || e.touches.length !== 1) return;
+    touchScrollStart = { y: e.touches[0].clientY, scrollY: homeScrollY };
+  }, { passive: true });
+  out.addEventListener('touchmove', (e) => {
+    if (phase !== 'home' || !touchScrollStart) return;
+    if (homeContentHeight <= homeViewportH) return;
+    const r = out.getBoundingClientRect();
+    const ratio = SCREEN_H / Math.max(1, r.height);
+    const dy = (touchScrollStart.y - e.touches[0].clientY) * ratio;
+    homeScrollY = Math.max(0, Math.min(maxHomeScroll(), touchScrollStart.scrollY + dy));
+    e.preventDefault();
+  }, { passive: false });
+  function endTouch() { touchScrollStart = null; }
+  out.addEventListener('touchend', endTouch, { passive: true });
+  out.addEventListener('touchcancel', endTouch, { passive: true });
 
   // ── Sand-dissolve ──────────────────────────────────────────────
   // We snapshot the splash into an offscreen canvas and progressively erase
@@ -785,10 +880,16 @@
   let homeScratchAt = 0;
   function ensureHomeScratch() {
     const now = performance.now();
-    if (homeScratch && now - homeScratchAt < 300) return;
-    if (!homeScratch) {
+    if (homeScratch &&
+        homeScratch.width === SCREEN_W &&
+        homeScratch.height === SCREEN_H &&
+        now - homeScratchAt < 300) return;
+    if (!homeScratch ||
+        homeScratch.width !== SCREEN_W ||
+        homeScratch.height !== SCREEN_H) {
       homeScratch = document.createElement('canvas');
-      homeScratch.width = SCREEN_W; homeScratch.height = SCREEN_H;
+      homeScratch.width = SCREEN_W;
+      homeScratch.height = SCREEN_H;
     }
     // Render home into the scratch by temporarily redirecting output.
     const realCtx = sctx;
@@ -868,49 +969,71 @@
 
   function drawChrome(title) {
     clear();
-    // header
+    const px = pad();
+    const py = Math.round(pad() * 0.75);
+
+    // Header
     sctx.fillStyle = PHOSPHOR;
-    sctx.font = FONT_BIG;
+    sctx.font = font(1.6);
     sctx.textBaseline = 'top';
     sctx.textAlign = 'left';
-    sctx.fillText('SENTINEL ROBOTICS', 70, 50);
-    sctx.font = FONT_SMALL;
+    sctx.fillText('SENTINEL ROBOTICS', px, py);
+
+    const subY = py + Math.round(fontPx(1.6) * 1.05);
+    sctx.font = font(0.75);
     sctx.fillStyle = PHOSPHOR_DIM;
-    sctx.fillText('AUTONOMOUS PLATFORMS  ·  TERMINAL v3.14.02', 70, 92);
-    if (title) {
-      sctx.fillStyle = PHOSPHOR_DIM;
-      sctx.font = FONT_SMALL;
+    sctx.fillText('AUTONOMOUS PLATFORMS  ·  TERMINAL v3.14.02', px, subY);
+
+    // Right-side title is dropped on narrow screens where it would
+    // collide with the subtitle. ~700 source-px is enough room.
+    if (title && SCREEN_W > 700) {
       sctx.textAlign = 'right';
-      sctx.fillText(title, SCREEN_W - 70, 92);
+      sctx.fillText(title, SCREEN_W - px, subY);
       sctx.textAlign = 'left';
     }
-    sctx.fillStyle = PHOSPHOR_FAINT;
-    sctx.fillRect(70, 130, SCREEN_W - 140, 1);
 
-    // footer divider + copyright
+    const ruleY = subY + Math.round(fontPx(0.75) * 1.8);
     sctx.fillStyle = PHOSPHOR_FAINT;
-    sctx.fillRect(70, SCREEN_H - 70, SCREEN_W - 140, 1);
+    sctx.fillRect(px, ruleY, SCREEN_W - px * 2, 1);
+
+    // Footer divider + copyright
+    const footY = SCREEN_H - Math.round(unit() * 3.0);
+    sctx.fillStyle = PHOSPHOR_FAINT;
+    sctx.fillRect(px, footY, SCREEN_W - px * 2, 1);
     sctx.fillStyle = PHOSPHOR_DIM;
-    sctx.font = FONT_SMALL;
-    sctx.fillText('© 2026 SENTINEL ROBOTICS  ·  COMMERCIAL IN CONFIDENCE', 70, SCREEN_H - 56);
+    sctx.font = font(0.75);
+    sctx.fillText('© 2026 SENTINEL ROBOTICS  ·  COMMERCIAL IN CONFIDENCE',
+      px, footY + Math.round(fontPx(0.75) * 0.7));
+
+    // Return the layout box callers should draw within.
+    return {
+      px,
+      contentTop: ruleY + Math.round(unit() * 1.4),
+      contentBottom: footY - Math.round(unit() * 1.0),
+    };
   }
 
   // ── Boot phase ─────────────────────────────────────────────────
   function drawBoot(elapsed) {
     clear();
-    const padX = 70, padY = 70, lineH = 28;
-    sctx.font = FONT;
+    const px = pad();
+    const py = Math.round(pad() * 1.0);
+    sctx.font = font(0.95);
+    const lh = Math.round(fontPx(0.95) * 1.35);
     sctx.fillStyle = PHOSPHOR;
     sctx.textBaseline = 'top';
     sctx.textAlign = 'left';
 
-    let lastY = padY;
+    let lastY = py;
     for (const [t, s] of BOOT_LINES) {
       if (t > elapsed) break;
-      sctx.fillText(s, padX, lastY);
-      lastY += lineH;
+      sctx.fillText(s, px, lastY);
+      lastY += lh;
     }
-    if (cursorOn) sctx.fillRect(padX, lastY + 4, 12, 18);
+    if (cursorOn) {
+      sctx.fillRect(px, lastY + 4, Math.round(fontPx(0.95) * 0.6),
+                    Math.round(fontPx(0.95) * 0.9));
+    }
 
     if (elapsed > 6.5) setPhase('splash');
   }
@@ -921,9 +1044,15 @@
     if (!logoProcessed) return;
     const fade = Math.min(1, elapsed / 0.6);
     const flicker = elapsed < 0.35 ? (0.55 + Math.random() * 0.45) : 1;
-    const w = logoProcessed.width, h = logoProcessed.height;
+
+    // Scale logo to fit the current screen, keeping aspect.
+    const maxW = Math.min(SCREEN_W * 0.72, logoProcessed.width);
+    const scale = maxW / logoProcessed.width;
+    const w = logoProcessed.width * scale;
+    const h = logoProcessed.height * scale;
     const cx = (SCREEN_W - w) / 2;
-    const cy = (SCREEN_H - h) / 2 - 40;
+    const cy = (SCREEN_H - h) / 2 - Math.round(unit() * 1.8);
+
     sctx.globalAlpha = fade * flicker;
     sctx.globalCompositeOperation = 'lighter';
     sctx.drawImage(logoProcessed, cx, cy, w, h);
@@ -934,10 +1063,11 @@
       const tagFade = Math.min(1, (elapsed - 0.9) / 0.5);
       sctx.globalAlpha = tagFade;
       sctx.fillStyle = PHOSPHOR;
-      sctx.font = FONT_SMALL;
+      sctx.font = font(0.85);
       sctx.textAlign = 'center';
       sctx.textBaseline = 'middle';
-      sctx.fillText('AUTONOMOUS PLATFORMS  ·  ESTABLISHED 2025', SCREEN_W / 2, cy + h + 36);
+      sctx.fillText('AUTONOMOUS PLATFORMS  ·  ESTABLISHED 2025',
+        SCREEN_W / 2, cy + h + Math.round(unit() * 1.8));
       sctx.globalAlpha = 1;
       sctx.textAlign = 'left';
     }
@@ -945,9 +1075,10 @@
       const blink = Math.floor(elapsed * 1.6) % 2 === 0;
       if (blink) {
         sctx.fillStyle = PHOSPHOR;
-        sctx.font = FONT;
+        sctx.font = font(1.0);
         sctx.textAlign = 'center';
-        sctx.fillText('PRESS ANY KEY TO CONTINUE', SCREEN_W / 2, SCREEN_H - 110);
+        sctx.fillText('PRESS ANY KEY TO CONTINUE',
+          SCREEN_W / 2, SCREEN_H - Math.round(unit() * 5.0));
         sctx.textAlign = 'left';
       }
     }
@@ -966,84 +1097,289 @@
   ].join('\n');
 
   function drawHome(elapsed, duringSand) {
-    drawChrome(null);
+    const ch = drawChrome(null);
     hits = [];
-
-    // ── Left column: copy ──────────────────────────────────────
-    const leftX = 80;
-    const leftW = 700;
+    const px = ch.px;
+    const top = ch.contentTop;
+    const bottom = ch.contentBottom;
+    homeViewportH = bottom - top;
+    const availW = SCREEN_W - px * 2;
     sctx.textBaseline = 'top';
 
-    // small brand mark above headline
-    if (brandProcessed) {
-      sctx.globalCompositeOperation = 'lighter';
-      sctx.drawImage(brandProcessed, leftX, 168, 56, 56);
-      sctx.globalCompositeOperation = 'source-over';
+    if (isPortrait()) {
+      drawHomeStacked(top, bottom, homeViewportH, availW, px, duringSand);
+    } else {
+      drawHomeWide(top, bottom, homeViewportH, availW, px, duringSand);
     }
-    sctx.fillStyle = PHOSPHOR_DIM;
-    sctx.font = FONT_SMALL;
-    sctx.fillText('// SENTINEL ROBOTICS', leftX + 72, 180);
-    sctx.fillText('DUAL-USE  ·  KINETIC  ·  FIELD-DEPLOYED', leftX + 72, 200);
+  }
 
-    // headline
-    sctx.fillStyle = PHOSPHOR;
-    sctx.font = FONT_HUGE;
-    sctx.fillText('AUTONOMOUS GROUND', leftX, 248);
-    sctx.fillText('INTERDICTION.', leftX, 296);
+  function drawHomeWide(top, bottom, availH, availW, px, duringSand) {
+    // Same clip-and-scroll pattern as the stacked layout — the wide
+    // layout overflows on short-but-wide viewports (laptops, phone
+    // landscape) and the user expects to be able to scroll through it
+    // rather than have the button cram into the blurb.
+    sctx.save();
+    sctx.beginPath();
+    sctx.rect(0, top, SCREEN_W, availH);
+    sctx.clip();
 
-    // blurb
-    sctx.fillStyle = PHOSPHOR;
-    sctx.font = FONT;
-    const blurbEndY = wrapText(BLURB, leftX, 372, leftW, 24);
+    // Layout: left column ≈58%, hero column ≈38%, gap ≈4%
+    const leftW = Math.round(availW * 0.58);
+    const rightW = Math.round(availW * 0.38);
+    const rightX = px + availW - rightW;
+    const heroSize = Math.min(rightW, Math.round(availH * 0.86));
 
-    // Investor button under copy
-    const btnLabel = '►  ACCESS INVESTOR PORTAL';
-    sctx.font = FONT;
-    const btnW = sctx.measureText(btnLabel).width + 60;
-    const btnX = leftX;
-    const btnY = Math.min(blurbEndY + 28, SCREEN_H - 200);
-    const btnH = 44;
-    const btnHover = mouseScreen.x >= btnX && mouseScreen.x <= btnX + btnW &&
-                     mouseScreen.y >= btnY && mouseScreen.y <= btnY + btnH;
-    sctx.strokeStyle = btnHover ? PHOSPHOR_BRIGHT : PHOSPHOR;
-    sctx.lineWidth = 1;
-    sctx.strokeRect(btnX, btnY, btnW, btnH);
-    sctx.fillStyle = btnHover ? PHOSPHOR_BRIGHT : PHOSPHOR;
-    sctx.textBaseline = 'middle';
-    sctx.fillText(btnLabel, btnX + 18, btnY + btnH / 2 + 2);
-    sctx.textBaseline = 'top';
-    if (!duringSand) {
-      hits.push({ x: btnX, y: btnY, w: btnW, h: btnH, action: () => { gateInput = ''; gateError = false; setPhase('gate'); } });
-    }
-
-    // contact line
-    sctx.fillStyle = PHOSPHOR_DIM;
-    sctx.font = FONT_SMALL;
-    sctx.fillText('CONTACT  ·  ROB SWATTON  ·  PRINCIPAL DEVELOPER  ·  rob@sentinelrobotic.com',
-      leftX, btnY + btnH + 22);
-
-    // ── Right column: turret hero ──────────────────────────────
-    const heroSize = 380;
-    const heroX = SCREEN_W - 80 - heroSize;
-    const heroY = 168;
+    // ── Right column: hero + sensor readout ────────────────────
+    // Scrolls along with the rest so the columns stay aligned.
+    const heroX = rightX + Math.round((rightW - heroSize) / 2);
+    const heroY = top - homeScrollY;
     if (turretProcessed) {
       sctx.globalCompositeOperation = 'lighter';
       sctx.drawImage(turretProcessed, heroX, heroY, heroSize, heroSize);
       sctx.globalCompositeOperation = 'source-over';
     } else {
-      // placeholder bracket-frame
       sctx.strokeStyle = PHOSPHOR_DIM;
       sctx.strokeRect(heroX, heroY, heroSize, heroSize);
     }
-    // HUD-ish corner brackets around the hero
+    drawHeroCorners(heroX, heroY, heroSize, heroSize);
+    sctx.fillStyle = PHOSPHOR_DIM;
+    sctx.font = font(0.75);
+    sctx.fillText('// MKIII PROTOTYPE  ·  RANGE TEST  ·  2026.04',
+      heroX, heroY + heroSize + Math.round(unit() * 0.7));
+    sctx.fillText('FRAME ' + frameNum() + '   GAIN +12dB   IR PASS',
+      heroX, heroY + heroSize + Math.round(unit() * 1.8));
+    const rightColHeight = heroSize + Math.round(unit() * 3.4);
+
+    // ── Left column: brand → headline → blurb → button → contact ─
+    let y = top - homeScrollY;
+
+    // Brand strip
+    const brandSize = Math.round(unit() * 2.7);
+    if (brandProcessed) {
+      sctx.globalCompositeOperation = 'lighter';
+      sctx.drawImage(brandProcessed, px, y, brandSize, brandSize);
+      sctx.globalCompositeOperation = 'source-over';
+    }
+    sctx.fillStyle = PHOSPHOR_DIM;
+    sctx.font = font(0.75);
+    sctx.fillText('// SENTINEL ROBOTICS',
+      px + brandSize + Math.round(unit() * 0.6), y + Math.round(unit() * 0.3));
+    sctx.fillText('DUAL-USE  ·  KINETIC  ·  FIELD-DEPLOYED',
+      px + brandSize + Math.round(unit() * 0.6), y + Math.round(unit() * 1.5));
+    y += brandSize + Math.round(unit() * 1.6);
+
+    // Headline (auto-shrink if the column is too narrow for the long line)
+    sctx.fillStyle = PHOSPHOR;
+    let hEm = 2.2;
+    sctx.font = font(hEm);
+    while (sctx.measureText('AUTONOMOUS GROUND').width > leftW && hEm > 1.2) {
+      hEm -= 0.1;
+      sctx.font = font(hEm);
+    }
+    const hLH = Math.round(fontPx(hEm) * 1.0);
+    sctx.fillText('AUTONOMOUS GROUND', px, y);  y += hLH;
+    sctx.fillText('INTERDICTION.', px, y);
+    y += Math.round(hLH * 1.35);
+
+    // Blurb
+    sctx.fillStyle = PHOSPHOR;
+    sctx.font = font(0.95);
+    const blurbLH = Math.round(fontPx(0.95) * 1.25);
+    y = wrapText(BLURB, px, y, leftW, blurbLH) + Math.round(unit() * 1.3);
+
+    // Investor button — natural flow, no clamping (scroll handles overflow)
+    const btnLabel = '►  ACCESS INVESTOR PORTAL';
+    sctx.font = font(0.95);
+    const btnW = sctx.measureText(btnLabel).width + Math.round(unit() * 2.6);
+    const btnH = Math.round(fontPx(0.95) * 2.2);
+    const btnY = y;
+    const btnHover = !duringSand &&
+      mouseScreen.x >= px && mouseScreen.x <= px + btnW &&
+      mouseScreen.y >= btnY && mouseScreen.y <= btnY + btnH;
+    sctx.strokeStyle = btnHover ? PHOSPHOR_BRIGHT : PHOSPHOR;
+    sctx.lineWidth = 1;
+    sctx.strokeRect(px, btnY, btnW, btnH);
+    sctx.fillStyle = btnHover ? PHOSPHOR_BRIGHT : PHOSPHOR;
+    sctx.textBaseline = 'middle';
+    sctx.fillText(btnLabel, px + Math.round(unit() * 0.9), btnY + btnH / 2 + 1);
+    sctx.textBaseline = 'top';
+    if (!duringSand) {
+      // Only register the hit if any part of the button is visible.
+      const visY = Math.max(btnY, top);
+      const visBottom = Math.min(btnY + btnH, bottom);
+      if (visBottom - visY > Math.round(unit() * 0.4)) {
+        hits.push({ x: px, y: visY, w: btnW, h: visBottom - visY, action: enterGate });
+      }
+    }
+    y = btnY + btnH + Math.round(unit() * 1.1);
+
+    // Contact line — wrap to multiple lines on narrow left columns
+    sctx.fillStyle = PHOSPHOR_DIM;
+    sctx.font = font(0.75);
+    const cLH = Math.round(fontPx(0.75) * 1.35);
+    y = wrapText('CONTACT  ·  ROB SWATTON  ·  PRINCIPAL DEVELOPER  ·  rob@sentinelrobotic.com',
+      px, y, leftW, cLH);
+    y += Math.round(cLH * 0.6);
+
+    sctx.restore();
+
+    // Content height = whichever column is taller
+    const leftColHeight = (y + homeScrollY) - top;
+    homeContentHeight = Math.max(leftColHeight, rightColHeight);
+
+    // Clamp scroll
+    const maxS = Math.max(0, homeContentHeight - availH);
+    if (homeScrollY > maxS) homeScrollY = maxS;
+    if (homeScrollY < 0) homeScrollY = 0;
+
+    // Scrollbar — only when content overflows
+    if (homeContentHeight > availH) {
+      const trackX = SCREEN_W - Math.round(unit() * 0.7);
+      const trackW = Math.max(2, Math.round(unit() * 0.18));
+      sctx.fillStyle = PHOSPHOR_FAINT;
+      sctx.fillRect(trackX, top, trackW, availH);
+      const knobH = Math.max(20, availH * (availH / homeContentHeight));
+      const knobY = top + (availH - knobH) * (maxS > 0 ? homeScrollY / maxS : 0);
+      sctx.fillStyle = PHOSPHOR_DIM;
+      sctx.fillRect(trackX, knobY, trackW, knobH);
+    }
+  }
+
+  function drawHomeStacked(top, bottom, availH, availW, px, duringSand) {
+    // Clip everything we draw to the content rectangle so off-screen
+    // (scrolled-away) content disappears cleanly.
+    sctx.save();
+    sctx.beginPath();
+    sctx.rect(0, top, SCREEN_W, availH);
+    sctx.clip();
+
+    // Layout cursor in CONTENT space; we subtract homeScrollY when blitting.
+    let y = top - homeScrollY;
+
+    // Brand mark + tagline
+    const brandSize = Math.round(unit() * 2.6);
+    if (brandProcessed) {
+      sctx.globalCompositeOperation = 'lighter';
+      sctx.drawImage(brandProcessed, px, y, brandSize, brandSize);
+      sctx.globalCompositeOperation = 'source-over';
+    }
+    sctx.fillStyle = PHOSPHOR_DIM;
+    sctx.font = font(0.75);
+    sctx.fillText('// SENTINEL ROBOTICS',
+      px + brandSize + Math.round(unit() * 0.6), y + Math.round(unit() * 0.3));
+    sctx.fillText('DUAL-USE  ·  KINETIC  ·  FIELD-DEPLOYED',
+      px + brandSize + Math.round(unit() * 0.6), y + Math.round(unit() * 1.5));
+    y += brandSize + Math.round(unit() * 1.5);
+
+    // Headline (slightly smaller for narrow widths)
+    sctx.fillStyle = PHOSPHOR;
+    let headlineEm = 1.9;
+    sctx.font = font(headlineEm);
+    // Auto-shrink if 'AUTONOMOUS GROUND' would overflow the width
+    while (sctx.measureText('AUTONOMOUS GROUND').width > availW && headlineEm > 1.0) {
+      headlineEm -= 0.1;
+      sctx.font = font(headlineEm);
+    }
+    const headlineLH = Math.round(fontPx(headlineEm) * 1.05);
+    sctx.fillText('AUTONOMOUS GROUND', px, y);  y += headlineLH;
+    sctx.fillText('INTERDICTION.', px, y);
+    // Full line height clears the text; the extra units are breathing
+    // room between the headline and the hero image below.
+    y += headlineLH + Math.round(unit() * 2.0);
+
+    // Hero image (centred). Cap height so it doesn't dominate on tall portraits.
+    const heroSize = Math.min(availW, Math.round(unit() * 16));
+    if (turretProcessed) {
+      const hx = px + Math.round((availW - heroSize) / 2);
+      sctx.globalCompositeOperation = 'lighter';
+      sctx.drawImage(turretProcessed, hx, y, heroSize, heroSize);
+      sctx.globalCompositeOperation = 'source-over';
+      drawHeroCorners(hx, y, heroSize, heroSize);
+      sctx.fillStyle = PHOSPHOR_DIM;
+      sctx.font = font(0.7);
+      sctx.fillText('// MKIII PROTOTYPE  ·  RANGE TEST  ·  2026.04',
+        hx, y + heroSize + Math.round(unit() * 0.7));
+      sctx.fillText('FRAME ' + frameNum() + '   GAIN +12dB   IR PASS',
+        hx, y + heroSize + Math.round(unit() * 1.8));
+      y += heroSize + Math.round(unit() * 3.4);
+    } else {
+      y += Math.round(unit() * 1.0);
+    }
+
+    // Blurb (full width)
+    sctx.fillStyle = PHOSPHOR;
+    sctx.font = font(0.95);
+    const blurbLH = Math.round(fontPx(0.95) * 1.25);
+    y = wrapText(BLURB, px, y, availW, blurbLH) + Math.round(unit() * 1.3);
+
+    // Investor button (full-width up to a cap)
+    const btnLabel = '►  ACCESS INVESTOR PORTAL';
+    sctx.font = font(0.95);
+    const btnNatural = sctx.measureText(btnLabel).width + Math.round(unit() * 2.6);
+    const btnW = Math.min(availW, btnNatural);
+    const btnH = Math.round(fontPx(0.95) * 2.3);
+    const btnY = y;
+    const btnHover = !duringSand &&
+      mouseScreen.x >= px && mouseScreen.x <= px + btnW &&
+      mouseScreen.y >= btnY && mouseScreen.y <= btnY + btnH;
+    sctx.strokeStyle = btnHover ? PHOSPHOR_BRIGHT : PHOSPHOR;
+    sctx.lineWidth = 1;
+    sctx.strokeRect(px, btnY, btnW, btnH);
+    sctx.fillStyle = btnHover ? PHOSPHOR_BRIGHT : PHOSPHOR;
+    sctx.textBaseline = 'middle';
+    sctx.fillText(btnLabel, px + Math.round(unit() * 0.9), btnY + btnH / 2 + 1);
+    sctx.textBaseline = 'top';
+    // Only register the hit when the button is visible inside the
+    // content rectangle — prevents off-screen widgets accepting clicks.
+    if (!duringSand) {
+      const visY = Math.max(btnY, top);
+      const visBottom = Math.min(btnY + btnH, bottom);
+      if (visBottom - visY > Math.round(unit() * 0.4)) {
+        hits.push({ x: px, y: visY, w: btnW, h: visBottom - visY, action: enterGate });
+      }
+    }
+    y = btnY + btnH + Math.round(unit() * 1.2);
+
+    // Contact, stacked across multiple lines so it doesn't overflow narrow widths.
+    sctx.fillStyle = PHOSPHOR_DIM;
+    sctx.font = font(0.75);
+    const cLH = Math.round(fontPx(0.75) * 1.3);
+    sctx.fillText('CONTACT  ·  ROB SWATTON', px, y); y += cLH;
+    sctx.fillText('PRINCIPAL DEVELOPER',       px, y); y += cLH;
+    sctx.fillText('rob@sentinelrobotic.com',   px, y); y += Math.round(cLH * 1.4);
+
+    sctx.restore();
+
+    // Record total content height for scroll bounds. y was advanced in
+    // content space (offset by -homeScrollY), so we add it back.
+    homeContentHeight = (y + homeScrollY) - top;
+    const maxS = Math.max(0, homeContentHeight - availH);
+    if (homeScrollY > maxS) homeScrollY = maxS;
+    if (homeScrollY < 0) homeScrollY = 0;
+
+    // Scrollbar — only when content overflows
+    if (homeContentHeight > availH) {
+      const trackX = SCREEN_W - Math.round(unit() * 0.7);
+      const trackW = Math.max(2, Math.round(unit() * 0.18));
+      sctx.fillStyle = PHOSPHOR_FAINT;
+      sctx.fillRect(trackX, top, trackW, availH);
+      const knobH = Math.max(20, availH * (availH / homeContentHeight));
+      const knobY = top + (availH - knobH) * (maxS > 0 ? homeScrollY / maxS : 0);
+      sctx.fillStyle = PHOSPHOR_DIM;
+      sctx.fillRect(trackX, knobY, trackW, knobH);
+    }
+  }
+
+  // Bracket corners around the square hero image.
+  function drawHeroCorners(x, y, w, h) {
     sctx.strokeStyle = PHOSPHOR;
     sctx.lineWidth = 2;
-    const br = 18;
+    const br = Math.max(10, Math.round(unit() * 0.9));
     const corners = [
-      [heroX, heroY, 1, 1],
-      [heroX + heroSize, heroY, -1, 1],
-      [heroX, heroY + heroSize, 1, -1],
-      [heroX + heroSize, heroY + heroSize, -1, -1],
+      [x,     y,     1,  1],
+      [x + w, y,    -1,  1],
+      [x,     y + h, 1, -1],
+      [x + w, y + h,-1, -1],
     ];
     for (const [cx, cy, dx, dy] of corners) {
       sctx.beginPath();
@@ -1053,13 +1389,17 @@
       sctx.stroke();
     }
     sctx.lineWidth = 1;
+  }
 
-    // sensor-readout label under the hero
-    sctx.fillStyle = PHOSPHOR_DIM;
-    sctx.font = FONT_SMALL;
-    sctx.fillText('// MKIII PROTOTYPE  ·  RANGE TEST  ·  2026.04', heroX, heroY + heroSize + 14);
-    sctx.fillText('FRAME ' + (1200 + Math.floor((performance.now() / 33) % 800)).toString().padStart(5, '0') +
-                  '   GAIN +12dB   IR PASS', heroX, heroY + heroSize + 36);
+  function frameNum() {
+    return (1200 + Math.floor((performance.now() / 33) % 800))
+      .toString().padStart(5, '0');
+  }
+
+  function enterGate() {
+    gateInput = '';
+    gateError = false;
+    setPhase('gate');
   }
 
   // ── Gate ───────────────────────────────────────────────────────
@@ -1068,78 +1408,105 @@
   const ACCESS_CODE = 'paxamericana';
 
   function drawGate(elapsed) {
-    drawChrome('// INVESTOR ACCESS');
+    const ch = drawChrome('// INVESTOR ACCESS');
     hits = [];
+    const px = ch.px;
+    const availW = SCREEN_W - px * 2;
+    let y = ch.contentTop;
 
     sctx.fillStyle = PHOSPHOR_DIM;
-    sctx.font = FONT_SMALL;
-    sctx.fillText('// AUTHORISATION REQUIRED', 80, 180);
+    sctx.font = font(0.75);
+    sctx.fillText('// AUTHORISATION REQUIRED', px, y);
+    y += Math.round(unit() * 1.6);
+
     sctx.fillStyle = PHOSPHOR;
-    sctx.font = FONT_HUGE;
-    sctx.fillText('SECURE GATEWAY', 80, 210);
+    const heroEm = isPortrait() ? 1.8 : 2.2;
+    sctx.font = font(heroEm);
+    sctx.fillText('SECURE GATEWAY', px, y);
+    y += Math.round(fontPx(heroEm) * 1.4);
+
     sctx.fillStyle = PHOSPHOR;
-    sctx.font = FONT;
-    sctx.fillText('Phase 01 investor materials are gated.', 80, 280);
-    sctx.fillText('Enter access code to continue.', 80, 308);
+    sctx.font = font(0.95);
+    const bodyLH = Math.round(fontPx(0.95) * 1.35);
+    sctx.fillText('Phase 01 investor materials are gated.', px, y); y += bodyLH;
+    sctx.fillText('Enter access code to continue.', px, y);
+    y += Math.round(bodyLH * 1.6);
 
     // Input box
-    const boxX = 80, boxY = 380, boxW = SCREEN_W - 160, boxH = 56;
+    const boxX = px;
+    const boxW = availW;
+    const boxH = Math.round(fontPx(1.4) * 1.9);
+    const boxY = y;
     sctx.strokeStyle = gateError ? '#d04a2a' : PHOSPHOR;
     sctx.lineWidth = 1;
     sctx.strokeRect(boxX, boxY, boxW, boxH);
     sctx.fillStyle = PHOSPHOR_DIM;
-    sctx.font = FONT_SMALL;
-    sctx.fillText('ACCESS CODE', boxX + 14, boxY - 20);
+    sctx.font = font(0.7);
+    sctx.fillText('ACCESS CODE', boxX + Math.round(unit() * 0.6),
+                  boxY - Math.round(unit() * 1.0));
     sctx.fillStyle = PHOSPHOR;
-    sctx.font = FONT_BIG;
+    sctx.font = font(1.4);
     sctx.textBaseline = 'middle';
     const masked = gateInput.replace(/./g, '●');
-    sctx.fillText(masked, boxX + 18, boxY + boxH / 2 + 2);
+    sctx.fillText(masked, boxX + Math.round(unit() * 0.85), boxY + boxH / 2 + 1);
     if (cursorOn) {
       const w = sctx.measureText(masked).width;
-      sctx.fillRect(boxX + 18 + w + 4, boxY + boxH / 2 - 12, 14, 24);
+      const ch2 = Math.round(fontPx(1.4) * 0.55);
+      sctx.fillRect(boxX + Math.round(unit() * 0.85) + w + 4,
+                    boxY + boxH / 2 - ch2 * 0.85, ch2, ch2 * 1.6);
     }
     sctx.textBaseline = 'top';
 
     if (gateError) {
       sctx.fillStyle = '#d04a2a';
-      sctx.font = FONT;
-      sctx.fillText('  ACCESS DENIED · INVALID CREDENTIALS', boxX, boxY + boxH + 18);
+      sctx.font = font(0.9);
+      sctx.fillText('  ACCESS DENIED · INVALID CREDENTIALS',
+        boxX, boxY + boxH + Math.round(unit() * 0.8));
     }
 
-    // Buttons
-    const btnY = boxY + boxH + 70;
-    sctx.font = FONT;
+    // Buttons — stack vertically on narrow viewports where they'd overlap.
+    const btnY = boxY + boxH + Math.round(unit() * 3.2);
+    sctx.font = font(0.95);
+    const btnH = Math.round(fontPx(0.95) * 2.1);
     const submit = '[ ENTER ]  AUTHENTICATE';
-    const submitW = sctx.measureText(submit).width + 40;
+    const back = '[ ESC ]  RETURN';
+    const submitW = sctx.measureText(submit).width + Math.round(unit() * 1.9);
+    const backW   = sctx.measureText(back).width   + Math.round(unit() * 1.5);
+
+    let backX, backY;
+    if (submitW + backW + Math.round(unit() * 1.0) > boxW) {
+      backX = boxX;
+      backY = btnY + btnH + Math.round(unit() * 0.8);
+    } else {
+      backX = boxX + boxW - backW;
+      backY = btnY;
+    }
+
     const sHover = mouseScreen.x >= boxX && mouseScreen.x <= boxX + submitW &&
-                   mouseScreen.y >= btnY && mouseScreen.y <= btnY + 40;
+                   mouseScreen.y >= btnY && mouseScreen.y <= btnY + btnH;
     sctx.strokeStyle = sHover ? PHOSPHOR_BRIGHT : PHOSPHOR;
-    sctx.strokeRect(boxX, btnY, submitW, 40);
+    sctx.strokeRect(boxX, btnY, submitW, btnH);
     sctx.fillStyle = sHover ? PHOSPHOR_BRIGHT : PHOSPHOR;
     sctx.textBaseline = 'middle';
-    sctx.fillText(submit, boxX + 14, btnY + 22);
+    sctx.fillText(submit, boxX + Math.round(unit() * 0.7), btnY + btnH / 2 + 1);
     sctx.textBaseline = 'top';
-    hits.push({ x: boxX, y: btnY, w: submitW, h: 40, action: tryAuth });
+    hits.push({ x: boxX, y: btnY, w: submitW, h: btnH, action: tryAuth });
 
-    // Back
-    const back = '[ ESC ]  RETURN';
-    const backW = sctx.measureText(back).width + 30;
-    const backX = boxX + boxW - backW;
     const bHover = mouseScreen.x >= backX && mouseScreen.x <= backX + backW &&
-                   mouseScreen.y >= btnY && mouseScreen.y <= btnY + 40;
+                   mouseScreen.y >= backY && mouseScreen.y <= backY + btnH;
     sctx.strokeStyle = bHover ? PHOSPHOR_BRIGHT : PHOSPHOR_DIM;
-    sctx.strokeRect(backX, btnY, backW, 40);
+    sctx.strokeRect(backX, backY, backW, btnH);
     sctx.fillStyle = bHover ? PHOSPHOR_BRIGHT : PHOSPHOR_DIM;
     sctx.textBaseline = 'middle';
-    sctx.fillText(back, backX + 14, btnY + 22);
+    sctx.fillText(back, backX + Math.round(unit() * 0.7), backY + btnH / 2 + 1);
     sctx.textBaseline = 'top';
-    hits.push({ x: backX, y: btnY, w: backW, h: 40, action: () => setPhase('home') });
+    hits.push({ x: backX, y: backY, w: backW, h: btnH, action: () => setPhase('home') });
 
-    // Hint
+    // Hint at the bottom of the available area
     sctx.fillStyle = PHOSPHOR_DIM;
-    sctx.font = FONT_SMALL;
-    sctx.fillText('TYPE CODE  ·  ENTER TO AUTHENTICATE  ·  ESC TO RETURN', boxX, SCREEN_H - 110);
+    sctx.font = font(0.7);
+    sctx.fillText('TYPE CODE  ·  ENTER TO AUTHENTICATE  ·  ESC TO RETURN',
+      boxX, ch.contentBottom - Math.round(unit() * 1.0));
   }
 
   function tryAuth() {
@@ -1174,30 +1541,38 @@
   ];
 
   function drawAuthing(elapsed) {
-    drawChrome('// AUTHENTICATING');
+    const ch = drawChrome('// AUTHENTICATING');
+    const px = ch.px;
     sctx.fillStyle = PHOSPHOR;
-    sctx.font = FONT;
-    let y = 180;
+    sctx.font = font(0.95);
+    const lh = Math.round(fontPx(0.95) * 1.35);
+    let y = ch.contentTop + Math.round(unit() * 0.4);
+
+    // Reserve the bottom of the available area for the progress bar.
+    const barH = Math.max(12, Math.round(unit() * 0.9));
+    const barY = ch.contentBottom - Math.round(unit() * 1.5) - barH;
+    const yMax = barY - Math.round(unit() * 2.5);
+
     for (const [t, s] of AUTH_STEPS) {
       if (t > elapsed) break;
-      sctx.fillText(s, 80, y);
-      y += 28;
+      if (y > yMax) break; // don't overflow into the progress bar
+      sctx.fillText(s, px, y);
+      y += lh;
     }
     // progress bar
     const total = 5.4;
     const pct = Math.min(1, elapsed / total);
-    const barX = 80, barY = SCREEN_H - 130, barW = SCREEN_W - 160, barH = 18;
+    const barW = SCREEN_W - px * 2;
     sctx.strokeStyle = PHOSPHOR_DIM;
-    sctx.strokeRect(barX, barY, barW, barH);
+    sctx.strokeRect(px, barY, barW, barH);
     sctx.fillStyle = PHOSPHOR;
-    sctx.fillRect(barX + 2, barY + 2, (barW - 4) * pct, barH - 4);
+    sctx.fillRect(px + 2, barY + 2, (barW - 4) * pct, barH - 4);
     sctx.fillStyle = PHOSPHOR_DIM;
-    sctx.font = FONT_SMALL;
-    sctx.fillText(`${(pct * 100).toFixed(0)}%`, barX, barY - 22);
+    sctx.font = font(0.75);
+    sctx.fillText(`${(pct * 100).toFixed(0)}%`, px, barY - Math.round(unit() * 1.1));
 
     if (elapsed > total + 0.6) {
       setPhase('deck');
-      // notify HTML to show deck overlay
       document.dispatchEvent(new CustomEvent('sentinel:enter-deck'));
     }
   }
@@ -1205,10 +1580,10 @@
   function drawDeckShell() {
     // While deck is shown via HTML overlay (PDF.js iframe), render a minimal
     // backdrop so any peek-through is on-brand.
-    drawChrome('// INVESTOR DECK');
+    const ch = drawChrome('// INVESTOR DECK');
     sctx.fillStyle = PHOSPHOR_DIM;
-    sctx.font = FONT_SMALL;
-    sctx.fillText('Deck rendered above this terminal.', 80, 180);
+    sctx.font = font(0.75);
+    sctx.fillText('Deck rendered above this terminal.', ch.px, ch.contentTop);
   }
 
   // ── Keyboard ───────────────────────────────────────────────────
