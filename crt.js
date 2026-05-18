@@ -632,7 +632,9 @@
   function unit() { return Math.max(SCREEN_W, SCREEN_H) / 60; }
   function fontPx(em) { return Math.max(10, Math.round(em * unit())); }
   function font(em) { return fontPx(em) + 'px "VT323", "Courier New", monospace'; }
-  function pad() { return Math.round(Math.max(24, Math.min(80, unit() * 3.2))); }
+  // Wider gutter so body copy doesn't sit under the chromatic-aberration
+  // fringing at the screen edge.
+  function pad() { return Math.round(Math.max(40, Math.min(120, unit() * 4.4))); }
   // Portrait/square uses a stacked layout that can scroll; landscape
   // uses the side-by-side hero+copy split.
   function isPortrait() { return SCREEN_W / SCREEN_H < 1.25; }
@@ -1085,7 +1087,170 @@
   }
 
   // ── Home page (sentinel.exe) ───────────────────────────────────
-  // Single page: brand mark + headline + blurb + contact + investor-portal button.
+  // Single page: live hog counters + brand mark + headline + blurb +
+  //              hero image + investor-portal button + contact.
+
+  // ── Hog counters — math ────────────────────────────────────────
+  // Closed-form population + cumulative damage since the 2026-01-01 anchor.
+  //   N(t) = N0 * exp(r * T_eff)
+  //   D(t) = (N0*c/r) * (exp(r*T_eff) - 1)
+  // T_eff applies a seasonally-modulated year fraction (bimodal farrowing
+  // peaks Feb + May, summer trough Aug). Mean of monthly multipliers is
+  // normalised to 1.0 so the published 18% annual rate is preserved.
+  const HOG_ANCHOR_MS = Date.UTC(2026, 0, 1, 0, 0, 0);
+  const HOG_N0 = 36000000;
+  const HOG_R  = 0.18;
+  const HOG_C  = 300;
+  const HOG_RAW_M = [1.15, 1.30, 1.25, 1.15, 1.20, 1.05,
+                     0.80, 0.65, 0.75, 0.90, 0.95, 1.05];
+  const HOG_MEAN_M = HOG_RAW_M.reduce((a, b) => a + b, 0) / 12;
+  const HOG_M = HOG_RAW_M.map(x => x / HOG_MEAN_M);
+
+  function hogYearFraction(date) {
+    const y = date.getUTCFullYear();
+    const yearStart = Date.UTC(y, 0, 1);
+    const yearLen = Date.UTC(y + 1, 0, 1) - yearStart;
+    const monthsIn = ((date.getTime() - yearStart) / yearLen) * 12;
+    let acc = 0;
+    for (let i = 0; i < 12; i++) {
+      if (monthsIn >= i + 1) acc += HOG_M[i];
+      else if (monthsIn > i) { acc += HOG_M[i] * (monthsIn - i); break; }
+      else break;
+    }
+    return acc / 12;
+  }
+  // Counter math is intentionally STATELESS and anchor-based: every call
+  // recomputes from Date.now(), so the values reflect real elapsed time
+  // since the anchor on every page load. There is no accumulator, no
+  // localStorage, nothing that could "reset" or drift between sessions.
+  // Two browsers loading the page at the same moment see identical values.
+  function hogEffectiveYears(ms) {
+    // Guard against a system clock set before the anchor — clamp so the
+    // counters never go negative or run backwards on a clock-skewed client.
+    if (ms < HOG_ANCHOR_MS) ms = HOG_ANCHOR_MS;
+    const d = new Date(ms);
+    const a = new Date(HOG_ANCHOR_MS);
+    return (d.getUTCFullYear() - a.getUTCFullYear()) + hogYearFraction(d);
+  }
+  function hogPopulation(ms) {
+    return HOG_N0 * Math.exp(HOG_R * hogEffectiveYears(ms));
+  }
+  function hogDamage(ms) {
+    const t = hogEffectiveYears(ms);
+    return (HOG_N0 * HOG_C / HOG_R) * (Math.exp(HOG_R * t) - 1);
+  }
+
+  // Draw the two live counters at the top of the home content area.
+  // Returns the new y-cursor (post-bottom-margin) so the caller continues
+  // its layout from there.
+  function drawHogCounters(x, y, w, stacked) {
+    const now = Date.now();
+    const popStr = Math.floor(hogPopulation(now)).toLocaleString('en-US');
+    const dmgStr = '$' + Math.floor(hogDamage(now)).toLocaleString('en-US');
+
+    const gap = Math.round(unit() * 0.9);
+    let boxW, boxH;
+    if (stacked) {
+      boxW = w;
+      boxH = Math.round(unit() * 7.6);
+    } else {
+      boxW = Math.round((w - gap) / 2);
+      boxH = Math.round(unit() * 8.6);
+    }
+
+    const inset = Math.round(unit() * 1.1);
+
+    const drawOne = (bx, by, label, value, caption, isPrimary) => {
+      // Frame: thin border + bracket corners (matches the hero treatment)
+      sctx.strokeStyle = PHOSPHOR_FAINT;
+      sctx.lineWidth = 1;
+      sctx.strokeRect(bx + 0.5, by + 0.5, boxW - 1, boxH - 1);
+      drawHeroCorners(bx, by, boxW, boxH);
+
+      const cx = bx + boxW / 2;
+
+      // Label band (centered, top)
+      sctx.fillStyle = PHOSPHOR_DIM;
+      sctx.font = font(0.9);
+      sctx.textBaseline = 'top';
+      sctx.textAlign = 'center';
+      sctx.fillText(label, cx, by + inset);
+
+      // LIVE pip pinned to the box's top-right corner — independent of
+      // the (now centered) label.
+      if (isPrimary) {
+        sctx.textAlign = 'right';
+        sctx.font = font(0.85);
+        const liveStr = 'LIVE';
+        const liveW = sctx.measureText(liveStr).width;
+        const pipR = Math.max(2, Math.round(unit() * 0.26));
+        const liveRight = bx + boxW - inset;
+        const liveTop = by + inset;
+        sctx.fillStyle = PHOSPHOR_DIM;
+        sctx.fillText(liveStr, liveRight, liveTop);
+        sctx.beginPath();
+        sctx.arc(liveRight - liveW - pipR - Math.round(unit() * 0.4),
+                 liveTop + Math.round(fontPx(0.85) * 0.55),
+                 pipR, 0, Math.PI * 2);
+        sctx.fillStyle = cursorOn ? '#ff6a3a' : '#7a3a18';
+        sctx.fill();
+        sctx.textAlign = 'center';
+      }
+
+      // The big number — auto-shrink so the longest value still fits.
+      const innerW = boxW - inset * 2;
+      let numEm = isPrimary
+        ? (stacked ? 2.7 : 2.9)
+        : (stacked ? 2.2 : 2.3);
+      sctx.font = font(numEm);
+      while (sctx.measureText(value).width > innerW && numEm > 1.0) {
+        numEm -= 0.1;
+        sctx.font = font(numEm);
+      }
+      sctx.fillStyle = isPrimary ? PHOSPHOR_BRIGHT : PHOSPHOR;
+      sctx.textBaseline = 'alphabetic';
+      // Block out a generous gap between the number and the caption so
+      // the supporting copy clearly belongs to its own row.
+      const labelBottom  = by + inset + Math.round(fontPx(0.9) * 1.2);
+      const captionTop   = by + boxH - inset - Math.round(fontPx(0.85) * 1.1);
+      const captionRuleY = captionTop - Math.round(unit() * 0.9);
+      const numAreaTop    = labelBottom;
+      const numAreaBottom = captionRuleY - Math.round(unit() * 0.6);
+      const numMid = (numAreaTop + numAreaBottom) / 2;
+      sctx.fillText(value, cx, numMid + Math.round(fontPx(numEm) * 0.36));
+
+      // Hairline divider between the value and the caption — pinches
+      // in from the box edges so it reads as a sub-row, not a full split.
+      const ruleInset = Math.round(unit() * 2.2);
+      sctx.fillStyle = PHOSPHOR_FAINT;
+      sctx.fillRect(bx + ruleInset, captionRuleY,
+        boxW - ruleInset * 2, 1);
+
+      // Caption (centered, bottom)
+      sctx.fillStyle = PHOSPHOR_DIM;
+      sctx.font = font(0.85);
+      sctx.textBaseline = 'top';
+      sctx.fillText(caption, cx, captionTop);
+
+      sctx.textAlign = 'left';
+      sctx.textBaseline = 'top';
+    };
+
+    if (stacked) {
+      drawOne(x, y, 'U.S. FERAL HOG POPULATION', popStr,
+        'LIVE ESTIMATE  ·  COMPOUNDING AT 18%/YR', true);
+      drawOne(x, y + boxH + gap, 'AGRICULTURAL DAMAGE  ·  2026 YTD', dmgStr,
+        'USD, CUMULATIVE SINCE 01.01.2026  ·  $300/HOG/YR', false);
+      return y + boxH * 2 + gap;
+    } else {
+      drawOne(x, y, 'U.S. FERAL HOG POPULATION', popStr,
+        'LIVE ESTIMATE  ·  COMPOUNDING AT 18%/YR', true);
+      drawOne(x + boxW + gap, y, 'AGRICULTURAL DAMAGE  ·  2026 YTD', dmgStr,
+        'USD, CUMULATIVE SINCE 01.01.2026  ·  $300/HOG/YR', false);
+      return y + boxH;
+    }
+  }
+
   const BLURB = [
     'PROJECT SENTINEL is an autonomous ground platform for persistent, operator-authorised kinetic response across two converging domains — biosecurity and counter-drone (C-UAS).',
     '',
@@ -1123,16 +1288,24 @@
     sctx.rect(0, top, SCREEN_W, availH);
     sctx.clip();
 
+    // ── Live counters span full width at the very top ──────────
+    const countersTopY = top - homeScrollY;
+    const countersBottomY = drawHogCounters(px, countersTopY, availW, false);
+    const countersHeight = countersBottomY - countersTopY;
+    const colTop = countersBottomY + Math.round(unit() * 1.8);
+
     // Layout: left column ≈58%, hero column ≈38%, gap ≈4%
     const leftW = Math.round(availW * 0.58);
     const rightW = Math.round(availW * 0.38);
     const rightX = px + availW - rightW;
-    const heroSize = Math.min(rightW, Math.round(availH * 0.86));
+    // Hero now sized off the post-counters available height.
+    const heroAvailH = Math.max(0, (top + availH) - colTop);
+    const heroSize = Math.min(rightW, Math.round(heroAvailH * 0.86));
 
     // ── Right column: hero + sensor readout ────────────────────
     // Scrolls along with the rest so the columns stay aligned.
     const heroX = rightX + Math.round((rightW - heroSize) / 2);
-    const heroY = top - homeScrollY;
+    const heroY = colTop;
     if (turretProcessed) {
       sctx.globalCompositeOperation = 'lighter';
       sctx.drawImage(turretProcessed, heroX, heroY, heroSize, heroSize);
@@ -1143,15 +1316,15 @@
     }
     drawHeroCorners(heroX, heroY, heroSize, heroSize);
     sctx.fillStyle = PHOSPHOR_DIM;
-    sctx.font = font(0.75);
+    sctx.font = font(0.85);
     sctx.fillText('// MKIII PROTOTYPE  ·  RANGE TEST  ·  2026.04',
       heroX, heroY + heroSize + Math.round(unit() * 0.7));
     sctx.fillText('FRAME ' + frameNum() + '   GAIN +12dB   IR PASS',
       heroX, heroY + heroSize + Math.round(unit() * 1.8));
-    const rightColHeight = heroSize + Math.round(unit() * 3.4);
+    const rightColHeight = (heroY - countersTopY) + heroSize + Math.round(unit() * 3.4);
 
     // ── Left column: brand → headline → blurb → button → contact ─
-    let y = top - homeScrollY;
+    let y = colTop;
 
     // Brand strip
     const brandSize = Math.round(unit() * 2.7);
@@ -1161,37 +1334,39 @@
       sctx.globalCompositeOperation = 'source-over';
     }
     sctx.fillStyle = PHOSPHOR_DIM;
-    sctx.font = font(0.75);
+    sctx.font = font(0.9);
     sctx.fillText('// SENTINEL ROBOTICS',
       px + brandSize + Math.round(unit() * 0.6), y + Math.round(unit() * 0.3));
     sctx.fillText('DUAL-USE  ·  KINETIC  ·  FIELD-DEPLOYED',
-      px + brandSize + Math.round(unit() * 0.6), y + Math.round(unit() * 1.5));
+      px + brandSize + Math.round(unit() * 0.6), y + Math.round(unit() * 1.55));
     y += brandSize + Math.round(unit() * 1.6);
 
-    // Headline (auto-shrink if the column is too narrow for the long line)
+    // Headline — centered, single line, auto-shrink to fit.
     sctx.fillStyle = PHOSPHOR;
-    let hEm = 2.2;
+    const headlineWide = 'AUTONOMOUS GROUND INTERDICTION.';
+    let hEm = 2.4;
     sctx.font = font(hEm);
-    while (sctx.measureText('AUTONOMOUS GROUND').width > leftW && hEm > 1.2) {
+    while (sctx.measureText(headlineWide).width > leftW && hEm > 0.9) {
       hEm -= 0.1;
       sctx.font = font(hEm);
     }
     const hLH = Math.round(fontPx(hEm) * 1.0);
-    sctx.fillText('AUTONOMOUS GROUND', px, y);  y += hLH;
-    sctx.fillText('INTERDICTION.', px, y);
-    y += Math.round(hLH * 1.35);
+    sctx.textAlign = 'center';
+    sctx.fillText(headlineWide, px + leftW / 2, y);
+    sctx.textAlign = 'left';
+    y += hLH + Math.round(hLH * 0.4);
 
     // Blurb
     sctx.fillStyle = PHOSPHOR;
-    sctx.font = font(0.95);
-    const blurbLH = Math.round(fontPx(0.95) * 1.25);
-    y = wrapText(BLURB, px, y, leftW, blurbLH) + Math.round(unit() * 1.3);
+    sctx.font = font(1.2);
+    const blurbLH = Math.round(fontPx(1.2) * 1.3);
+    y = wrapText(BLURB, px, y, leftW, blurbLH) + Math.round(unit() * 1.4);
 
     // Investor button — natural flow, no clamping (scroll handles overflow)
     const btnLabel = '►  ACCESS INVESTOR PORTAL';
-    sctx.font = font(0.95);
+    sctx.font = font(1.2);
     const btnW = sctx.measureText(btnLabel).width + Math.round(unit() * 2.6);
-    const btnH = Math.round(fontPx(0.95) * 2.2);
+    const btnH = Math.round(fontPx(1.2) * 2.2);
     const btnY = y;
     const btnHover = !duringSand &&
       mouseScreen.x >= px && mouseScreen.x <= px + btnW &&
@@ -1215,8 +1390,8 @@
 
     // Contact line — wrap to multiple lines on narrow left columns
     sctx.fillStyle = PHOSPHOR_DIM;
-    sctx.font = font(0.75);
-    const cLH = Math.round(fontPx(0.75) * 1.35);
+    sctx.font = font(0.9);
+    const cLH = Math.round(fontPx(0.9) * 1.35);
     y = wrapText('CONTACT  ·  ROB SWATTON  ·  PRINCIPAL DEVELOPER  ·  rob@sentinelrobotic.com',
       px, y, leftW, cLH);
     y += Math.round(cLH * 0.6);
@@ -1256,6 +1431,9 @@
     // Layout cursor in CONTENT space; we subtract homeScrollY when blitting.
     let y = top - homeScrollY;
 
+    // ── Live counters (stacked) at the very top ────────────────
+    y = drawHogCounters(px, y, availW, true) + Math.round(unit() * 1.6);
+
     // Brand mark + tagline
     const brandSize = Math.round(unit() * 2.6);
     if (brandProcessed) {
@@ -1264,25 +1442,26 @@
       sctx.globalCompositeOperation = 'source-over';
     }
     sctx.fillStyle = PHOSPHOR_DIM;
-    sctx.font = font(0.75);
+    sctx.font = font(0.9);
     sctx.fillText('// SENTINEL ROBOTICS',
       px + brandSize + Math.round(unit() * 0.6), y + Math.round(unit() * 0.3));
     sctx.fillText('DUAL-USE  ·  KINETIC  ·  FIELD-DEPLOYED',
-      px + brandSize + Math.round(unit() * 0.6), y + Math.round(unit() * 1.5));
+      px + brandSize + Math.round(unit() * 0.6), y + Math.round(unit() * 1.55));
     y += brandSize + Math.round(unit() * 1.5);
 
-    // Headline (slightly smaller for narrow widths)
+    // Headline — centered, single line, auto-shrink to fit available width.
     sctx.fillStyle = PHOSPHOR;
-    let headlineEm = 1.9;
+    const stackedHeadline = 'AUTONOMOUS GROUND INTERDICTION.';
+    let headlineEm = 2.2;
     sctx.font = font(headlineEm);
-    // Auto-shrink if 'AUTONOMOUS GROUND' would overflow the width
-    while (sctx.measureText('AUTONOMOUS GROUND').width > availW && headlineEm > 1.0) {
+    while (sctx.measureText(stackedHeadline).width > availW && headlineEm > 0.8) {
       headlineEm -= 0.1;
       sctx.font = font(headlineEm);
     }
     const headlineLH = Math.round(fontPx(headlineEm) * 1.05);
-    sctx.fillText('AUTONOMOUS GROUND', px, y);  y += headlineLH;
-    sctx.fillText('INTERDICTION.', px, y);
+    sctx.textAlign = 'center';
+    sctx.fillText(stackedHeadline, px + availW / 2, y);
+    sctx.textAlign = 'left';
     // Full line height clears the text; the extra units are breathing
     // room between the headline and the hero image below.
     y += headlineLH + Math.round(unit() * 2.0);
@@ -1296,7 +1475,7 @@
       sctx.globalCompositeOperation = 'source-over';
       drawHeroCorners(hx, y, heroSize, heroSize);
       sctx.fillStyle = PHOSPHOR_DIM;
-      sctx.font = font(0.7);
+      sctx.font = font(0.85);
       sctx.fillText('// MKIII PROTOTYPE  ·  RANGE TEST  ·  2026.04',
         hx, y + heroSize + Math.round(unit() * 0.7));
       sctx.fillText('FRAME ' + frameNum() + '   GAIN +12dB   IR PASS',
@@ -1308,16 +1487,16 @@
 
     // Blurb (full width)
     sctx.fillStyle = PHOSPHOR;
-    sctx.font = font(0.95);
-    const blurbLH = Math.round(fontPx(0.95) * 1.25);
-    y = wrapText(BLURB, px, y, availW, blurbLH) + Math.round(unit() * 1.3);
+    sctx.font = font(1.2);
+    const blurbLH = Math.round(fontPx(1.2) * 1.3);
+    y = wrapText(BLURB, px, y, availW, blurbLH) + Math.round(unit() * 1.4);
 
     // Investor button (full-width up to a cap)
     const btnLabel = '►  ACCESS INVESTOR PORTAL';
-    sctx.font = font(0.95);
+    sctx.font = font(1.2);
     const btnNatural = sctx.measureText(btnLabel).width + Math.round(unit() * 2.6);
     const btnW = Math.min(availW, btnNatural);
-    const btnH = Math.round(fontPx(0.95) * 2.3);
+    const btnH = Math.round(fontPx(1.2) * 2.3);
     const btnY = y;
     const btnHover = !duringSand &&
       mouseScreen.x >= px && mouseScreen.x <= px + btnW &&
@@ -1342,8 +1521,8 @@
 
     // Contact, stacked across multiple lines so it doesn't overflow narrow widths.
     sctx.fillStyle = PHOSPHOR_DIM;
-    sctx.font = font(0.75);
-    const cLH = Math.round(fontPx(0.75) * 1.3);
+    sctx.font = font(0.9);
+    const cLH = Math.round(fontPx(0.9) * 1.3);
     sctx.fillText('CONTACT  ·  ROB SWATTON', px, y); y += cLH;
     sctx.fillText('PRINCIPAL DEVELOPER',       px, y); y += cLH;
     sctx.fillText('rob@sentinelrobotic.com',   px, y); y += Math.round(cLH * 1.4);
