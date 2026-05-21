@@ -1687,6 +1687,12 @@
     }
     if (phase === 'home') return;
     if (phase === 'gate') {
+      // When the DOM input shim is focused (always the case on the
+      // gate screen unless the user has tabbed away), it owns the
+      // keystrokes — its 'input' event syncs `gateInput`. If we ALSO
+      // appended the key here we'd double every character. Let the
+      // shim's own listeners handle Enter/Escape too.
+      if (document.activeElement === gateShim) return;
       gateError = false;
       if (e.key === 'Enter') { tryAuth(); return; }
       if (e.key === 'Escape') { blurGateShim(); setPhase('home'); return; }
