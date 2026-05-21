@@ -556,11 +556,16 @@
   let phase = 'preload';
   let phaseStart = performance.now();
   function setPhase(p) {
+    const prev = phase;
     phase = p;
     phaseStart = performance.now();
     // Reset scroll when (re-)entering the home screen so a user coming
     // back from the gate doesn't land mid-scroll.
     if (p === 'home') homeScrollY = 0;
+    // Body class so the shim input can be made tappable only while
+    // the gate is on-screen (avoids accidental focuses elsewhere).
+    document.body.classList.toggle('gate-active', p === 'gate');
+    if (prev === 'gate' && p !== 'gate') blurGateShim();
   }
   function phaseElapsed() { return (performance.now() - phaseStart) / 1000; }
 
@@ -1400,6 +1405,16 @@
     gateInput = '';
     gateError = false;
     setPhase('gate');
+    // Park the shim roughly where the field will draw before focusing,
+    // otherwise iOS may scroll the page to chase an off-screen input.
+    // The next drawGate frame will refine the position to pixel-precision.
+    if (gateShim) {
+      const r = out.getBoundingClientRect();
+      gateShim.style.left = (r.left + r.width  * 0.10) + 'px';
+      gateShim.style.top  = (r.top  + r.height * 0.45) + 'px';
+      gateShim.style.width  = (r.width  * 0.80) + 'px';
+      gateShim.style.height = (r.height * 0.10) + 'px';
+    }
     // Must run synchronously inside the user gesture that triggered
     // this call (a tap/click) — iOS Safari will silently drop the
     // soft-keyboard if focus happens later (e.g. in a setTimeout).
@@ -1453,6 +1468,25 @@
   function blurGateShim() {
     if (gateShim && document.activeElement === gateShim) gateShim.blur();
   }
+  // Position the shim input precisely over the canvas-rendered password
+  // field, in viewport (CSS-pixel) coordinates. Called every gate frame
+  // so the shim follows the field through viewport resizes.
+  function positionGateShim(srcX, srcY, srcW, srcH) {
+    if (!gateShim) return;
+    const r = out.getBoundingClientRect();
+    // out's CSS box maps the source canvas (SCREEN_W x SCREEN_H) onto
+    // the aperture; convert source-px -> viewport-px.
+    const sx = r.width  / SCREEN_W;
+    const sy = r.height / SCREEN_H;
+    const x = r.left + srcX * sx;
+    const y = r.top  + srcY * sy;
+    const w = srcW * sx;
+    const h = srcH * sy;
+    gateShim.style.left   = x + 'px';
+    gateShim.style.top    = y + 'px';
+    gateShim.style.width  = w + 'px';
+    gateShim.style.height = h + 'px';
+  }
 
   function drawGate(elapsed) {
     const ch = drawChrome('// INVESTOR ACCESS');
@@ -1487,6 +1521,9 @@
     sctx.strokeStyle = gateError ? '#d04a2a' : PHOSPHOR;
     sctx.lineWidth = 1;
     sctx.strokeRect(boxX, boxY, boxW, boxH);
+    // Project the input-box rect onto the viewport so the real DOM
+    // input sits exactly on top of it — taps land on the input.
+    positionGateShim(boxX, boxY, boxW, boxH);
     // Tapping the input box re-summons the soft keyboard if it was
     // dismissed (very common on Android Chrome).
     hits.push({ x: boxX, y: boxY, w: boxW, h: boxH, action: focusGateShim });

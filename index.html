@@ -299,30 +299,45 @@
 <img id="frame" src="assets/TVFrame.png" alt="">
 
 <!-- Hidden text input used only to summon the mobile soft-keyboard while
-     the user is on the gate screen. The visible field is rendered to
-     canvas; this DOM input mirrors its value. It must be a real,
-     non-display:none, non-readonly text input AND it must be focused
-     synchronously inside the user's tap gesture, otherwise iOS Safari
-     refuses to open the keyboard. We position it inside the viewport
-     (just transparent and 1×1) so iOS doesn't drop the focus. -->
+     the user is on the gate screen. We position this input precisely
+     OVER the canvas-rendered password field so a tap on the field
+     focuses a real DOM input — the only reliable way to summon the
+     mobile soft-keyboard. Its value mirrors `gateInput` in crt.js. -->
 <input id="gate-input-shim" type="text" autocomplete="off" autocorrect="off"
        autocapitalize="off" spellcheck="false" inputmode="text"
-       aria-label="Access code" tabindex="-1" />
+       enterkeyhint="go" aria-label="Access code" />
 <style>
   #gate-input-shim {
     position: fixed;
-    /* Park it in the corner — visible to the OS focus system but invisible to the user */
-    left: 0; top: 0;
-    width: 1px; height: 1px;
-    opacity: 0;
-    pointer-events: none;
+    /* Default off-screen position; crt.js moves it over the visible
+       password field every frame while the gate is active. */
+    left: -9999px;
+    top: -9999px;
+    width: 1px;
+    height: 1px;
+    /* Visually invisible but real to the browser/OS — a true
+       display:none or visibility:hidden would refuse to focus. */
     background: transparent;
-    border: 0;
-    outline: 0;
     color: transparent;
     caret-color: transparent;
-    font-size: 16px; /* iOS won't zoom on focus when >=16px */
-    z-index: -1;
+    border: 0;
+    outline: 0;
+    padding: 0;
+    margin: 0;
+    font-family: 'VT323', monospace;
+    /* iOS only suppresses the focus-zoom when font-size >= 16px. */
+    font-size: 16px;
+    /* Higher than the frame overlay so taps on the field hit the input. */
+    z-index: 50;
+    -webkit-appearance: none;
+    appearance: none;
+    /* No tap flash from this transparent element either. */
+    -webkit-tap-highlight-color: transparent;
+  }
+  #gate-input-shim:focus { outline: 0; }
+  /* Force the shim into view only while the gate is active. */
+  body:not(.gate-active) #gate-input-shim {
+    pointer-events: none;
   }
 </style>
 
