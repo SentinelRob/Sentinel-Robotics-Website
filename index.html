@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>SENTINEL ROBOTICS</title>
 <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
 <link rel="icon" type="image/png" sizes="192x192" href="assets/favicon-192.png">
@@ -109,9 +112,18 @@
   body.deck-fullscreen #crt { opacity: 0; }
   body.deck-fullscreen #deck {
     inset: 0 !important;
-    width: 100vw !important; height: 100vh !important;
+    width: 100vw !important;
+    /* Use dynamic-viewport units so on mobile we fill the area the
+       browser toolbars vacate. 100dvh is supported everywhere we care
+       about (Safari 15.4+, Chrome 108+). 100vh as fallback. */
+    height: 100vh !important;
+    height: 100dvh !important;
     left: 0 !important; top: 0 !important;
     background: #0a0604;
+    /* Extend underneath the iOS notch / Android status bar when the
+       page is in true fullscreen mode (viewport-fit=cover). */
+    padding: env(safe-area-inset-top) env(safe-area-inset-right)
+             env(safe-area-inset-bottom) env(safe-area-inset-left);
   }
 
   /* Inside the deck overlay */
@@ -480,7 +492,52 @@
     document.body.classList.toggle('deck-fullscreen', on);
     if (window.SentinelCRT) window.SentinelCRT.setCleanMode(on);
     d.btnFs.textContent = on ? 'EXIT FULLSCREEN' : 'FULLSCREEN';
+    // Native Fullscreen API — the only way to hide the mobile browser
+    // chrome (URL bar, tab strip, OS status bar where supported). On
+    // desktop this also hides the OS chrome, matching user expectation.
+    // Wrapped in try/catch because Safari throws when no user gesture
+    // is in scope (e.g. when we auto-exit on Esc) and we can ignore it.
+    try {
+      if (on) {
+        const el = document.documentElement;
+        const req = el.requestFullscreen
+                 || el.webkitRequestFullscreen
+                 || el.webkitRequestFullScreen
+                 || el.msRequestFullscreen;
+        if (req) {
+          const r = req.call(el, { navigationUI: 'hide' });
+          if (r && typeof r.catch === 'function') r.catch(() => {});
+        }
+      } else {
+        const isFs = document.fullscreenElement || document.webkitFullscreenElement;
+        if (isFs) {
+          const exit = document.exitFullscreen
+                    || document.webkitExitFullscreen
+                    || document.webkitCancelFullScreen
+                    || document.msExitFullscreen;
+          if (exit) {
+            const r = exit.call(document);
+            if (r && typeof r.catch === 'function') r.catch(() => {});
+          }
+        }
+      }
+    } catch (e) { /* ignored — fullscreen is best-effort */ }
   }
+
+  // Keep our internal state synced if the user exits fullscreen via the
+  // browser/OS (Esc on desktop, swipe-down on iOS, system gesture etc).
+  function onFsChange() {
+    const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+    if (!isFs && document.body.classList.contains('deck-fullscreen')) {
+      // User left fullscreen by some external means — reflect that in our UI.
+      document.body.classList.remove('deck-fullscreen');
+      if (window.SentinelCRT) window.SentinelCRT.setCleanMode(false);
+      const d = ensureDom();
+      d.btnFs.textContent = 'FULLSCREEN';
+    }
+  }
+  document.addEventListener('fullscreenchange', onFsChange);
+  document.addEventListener('webkitfullscreenchange', onFsChange);
 
   function closeDeck() {
     stopSequence();
