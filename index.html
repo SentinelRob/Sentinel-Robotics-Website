@@ -20,7 +20,14 @@
     cursor: default;
     font-family: 'VT323', monospace;
     color: #ffb070;
+    /* Kill the pale-blue tap flash mobile Safari/Chrome paint on every
+       touched element. We render our own hover/active states on the
+       canvas; the system overlay is just noise. */
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
   }
+  /* Belt-and-braces — applies to elements that don't inherit -webkit-tap-highlight-color */
+  *, *::before, *::after { -webkit-tap-highlight-color: transparent; }
   body {
     background:
       radial-gradient(ellipse at center, #1a0e08 0%, #050201 65%, #000 100%);
@@ -290,6 +297,34 @@
 
 <canvas id="crt"></canvas>
 <img id="frame" src="assets/TVFrame.png" alt="">
+
+<!-- Hidden text input used only to summon the mobile soft-keyboard while
+     the user is on the gate screen. The visible field is rendered to
+     canvas; this DOM input mirrors its value. It must be a real,
+     non-display:none, non-readonly text input AND it must be focused
+     synchronously inside the user's tap gesture, otherwise iOS Safari
+     refuses to open the keyboard. We position it inside the viewport
+     (just transparent and 1×1) so iOS doesn't drop the focus. -->
+<input id="gate-input-shim" type="text" autocomplete="off" autocorrect="off"
+       autocapitalize="off" spellcheck="false" inputmode="text"
+       aria-label="Access code" tabindex="-1" />
+<style>
+  #gate-input-shim {
+    position: fixed;
+    /* Park it in the corner — visible to the OS focus system but invisible to the user */
+    left: 0; top: 0;
+    width: 1px; height: 1px;
+    opacity: 0;
+    pointer-events: none;
+    background: transparent;
+    border: 0;
+    outline: 0;
+    color: transparent;
+    caret-color: transparent;
+    font-size: 16px; /* iOS won't zoom on focus when >=16px */
+    z-index: -1;
+  }
+</style>
 
 <!-- Deck overlay: positioned over the CRT screen aperture, contained by the frame.
      Goes fullscreen via body.deck-fullscreen. Currently shows the broken-broadcast
